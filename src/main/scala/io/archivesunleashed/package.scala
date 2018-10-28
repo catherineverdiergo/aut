@@ -35,6 +35,7 @@ import org.apache.spark.{SerializableWritable, SparkContext}
 import org.apache.spark.rdd.RDD
 import scala.reflect.ClassTag
 import scala.util.matching.Regex
+import java.net.URI
 
 /**
   * Package object which supplies implicits to augment generic RDDs with AUT-specific transformations.
@@ -53,6 +54,39 @@ package object archivesunleashed {
       val files = statuses.filter(f => fs.getContentSummary(f.getPath).getLength > 0).map(f => f.getPath)
       files.mkString(",")
     }
+    
+    def getS3Files(dir: Path, fs: FileSystem): String = {
+      val statuses = fs.listStatus(dir)
+      val files = statuses.filter(f => fs.getContentSummary(f.getPath).getLength > 0).map(f => f.getPath)
+      files.mkString(",")
+    }
+    
+    def getFSFiles(dir: Path, fs: FileSystem): String = {
+      if (dir.getName.startsWith("s3a://")) {
+        return getS3Files(dir, fs)
+      }
+      else {
+        return getFiles(dir, fs)
+      }
+    }
+    
+    def getFileSystem(path: String, sc: SparkContext): FileSystem = {
+      if (path.toLowerCase().startsWith("s3a://") || path.toLowerCase().startsWith("s3://")) {
+        return FileSystem.get(new URI(path), sc.hadoopConfiguration)
+      }
+      else {
+        return FileSystem.get(sc.hadoopConfiguration)
+      }
+    }
+    
+    def toS3a(path: String): String = {
+      if (path.toLowerCase().startsWith("s3://")) {
+        return "s3a" + path.slice(2, 2 + path.length())
+      }
+      else {
+        return path
+      }
+    }
 
     /** Creates an Archive Record RDD from a WARC or ARC file.
       *
@@ -61,9 +95,10 @@ package object archivesunleashed {
       * @return an RDD of ArchiveRecords for mapping.
       */
     def loadArchives(path: String, sc: SparkContext): RDD[ArchiveRecord] = {
-      val fs = FileSystem.get(sc.hadoopConfiguration)
-      val p = new Path(path)
-      sc.newAPIHadoopFile(getFiles(p, fs), classOf[ArchiveRecordInputFormat], classOf[LongWritable], classOf[ArchiveRecordWritable])
+      val normPath = toS3a(path)
+      val fs = getFileSystem(normPath, sc)
+      val p = new Path(normPath)
+      sc.newAPIHadoopFile(getFSFiles(p, fs), classOf[ArchiveRecordInputFormat], classOf[LongWritable], classOf[ArchiveRecordWritable])
         .filter(r => (r._2.getFormat == ArchiveFormat.ARC) ||
           ((r._2.getFormat == ArchiveFormat.WARC) && r._2.getRecord.getHeader.getHeaderValue("WARC-Type").equals("response")))
         .map(r => new ArchiveRecordImpl(new SerializableWritable(r._2)))
