@@ -62,7 +62,7 @@ package object archivesunleashed {
     }
     
     def getFSFiles(dir: Path, fs: FileSystem): String = {
-      if (dir.getName.startsWith("s3a://")) {
+      if (dir.toString().startsWith("s3a://")) {
         return getS3Files(dir, fs)
       }
       else {
@@ -87,6 +87,17 @@ package object archivesunleashed {
         return path
       }
     }
+    
+    def getFSMultiplePathsFiles(path: String, sc: SparkContext): String = {
+      val paths = path.split(",")
+      val allPaths = paths.map(path => {
+        val normPath = toS3a(path)
+        val fs = getFileSystem(normPath, sc)
+        val p = new Path(normPath)
+        return getFSFiles(p, fs)
+      })
+      return List(allPaths).mkString(",")
+    }
 
     /** Creates an Archive Record RDD from a WARC or ARC file.
       *
@@ -95,10 +106,7 @@ package object archivesunleashed {
       * @return an RDD of ArchiveRecords for mapping.
       */
     def loadArchives(path: String, sc: SparkContext): RDD[ArchiveRecord] = {
-      val normPath = toS3a(path)
-      val fs = getFileSystem(normPath, sc)
-      val p = new Path(normPath)
-      sc.newAPIHadoopFile(getFSFiles(p, fs), classOf[ArchiveRecordInputFormat], classOf[LongWritable], classOf[ArchiveRecordWritable])
+      sc.newAPIHadoopFile(getFSMultiplePathsFiles(path, sc), classOf[ArchiveRecordInputFormat], classOf[LongWritable], classOf[ArchiveRecordWritable])
         .filter(r => (r._2.getFormat == ArchiveFormat.ARC) ||
           ((r._2.getFormat == ArchiveFormat.WARC) && r._2.getRecord.getHeader.getHeaderValue("WARC-Type").equals("response")))
         .map(r => new ArchiveRecordImpl(new SerializableWritable(r._2)))
